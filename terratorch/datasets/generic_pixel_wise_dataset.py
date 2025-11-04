@@ -636,12 +636,20 @@ class GenericNonGeoPixelwiseDataset_Custom(GenericPixelWiseDataset):
             self.band_mapping = {}
             skipped_samples = []
 
-            for sample_name, band_dict in raw_mapping.items():
+            def validate_sample(sample_item):
+                """Validate a single sample's files (for parallel execution)."""
+                sample_name, band_dict = sample_item
                 missing_files = []
                 for band, file_path in band_dict.items():
                     if not os.path.exists(file_path):
                         missing_files.append(f"{band}: {file_path}")
+                return sample_name, band_dict, missing_files
 
+            with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+                validation_results = list(executor.map(validate_sample, raw_mapping.items()))
+
+            # Process validation results
+            for sample_name, band_dict, missing_files in validation_results:
                 if missing_files:
                     skipped_samples.append(sample_name)
                     logger.warning(
@@ -665,24 +673,25 @@ class GenericNonGeoPixelwiseDataset_Custom(GenericPixelWiseDataset):
         if output_dir is not None and layers is not None:
             output_path = Path(output_dir)
 
-            unprocessed_scenes = []
-            skipped_count = 0
-
             # Check if we have negative layer indices (can't resolve without model)
             # In this case, check if ANY layer_* folder contains the scene
             has_negative_indices = any(l < 0 for l in layers)
 
-            for scene_name in self.image_files:
+            # Pre-compute layer directories if needed (outside the parallel function)
+            layer_dirs = None
+            if has_negative_indices and output_path.exists():
+                layer_dirs = list(output_path.glob("layer_*"))
+
+            def check_scene_processed(scene_name):
+                """Check if a scene is already processed (for parallel execution)."""
                 # Extract scene name (handle both file paths and JSON keys)
-                stem = Path(scene_name).stem if not self.band_mapping else scene_name
+                stem = Path(scene_name).stem if self.band_mapping else scene_name
                 scene_key = stem.split("__")[0] if "__" in stem else stem
 
                 # Check if scene is already processed
                 if has_negative_indices:
                     # For negative indices, check if ANY layer_* folder contains this scene
-                    # This works because negative indices get resolved at runtime
-                    if output_path.exists():
-                        layer_dirs = list(output_path.glob("layer_*"))
+                    if layer_dirs is not None:
                         is_processed = any(
                             (layer_dir / scene_key).exists() and (layer_dir / scene_key).is_dir()
                             for layer_dir in layer_dirs
@@ -697,6 +706,16 @@ class GenericNonGeoPixelwiseDataset_Custom(GenericPixelWiseDataset):
                         for layer in layers
                     )
 
+                return scene_name, is_processed
+
+            # Parallelize scene processing checks using ThreadPoolExecutor
+            with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+                processing_results = list(executor.map(check_scene_processed, self.image_files))
+
+            # Collect unprocessed scenes
+            unprocessed_scenes = []
+            skipped_count = 0
+            for scene_name, is_processed in processing_results:
                 if not is_processed:
                     unprocessed_scenes.append(scene_name)
                 else:
