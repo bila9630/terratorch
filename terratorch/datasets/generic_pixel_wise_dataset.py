@@ -627,44 +627,10 @@ class GenericNonGeoPixelwiseDataset_Custom(GenericPixelWiseDataset):
         self.json_file = json_file
         self.band_mapping = None
         if json_file is not None:
-            logger = logging.getLogger("terratorch")
-
             with open(json_file, 'r') as f:
-                raw_mapping = json.load(f)
+                self.band_mapping = json.load(f)
 
-            # Validate file paths and filter out samples with missing files
-            self.band_mapping = {}
-            skipped_samples = []
-
-            def validate_sample(sample_item):
-                """Validate a single sample's files (for parallel execution)."""
-                sample_name, band_dict = sample_item
-                missing_files = []
-                for band, file_path in band_dict.items():
-                    if not os.path.exists(file_path):
-                        missing_files.append(f"{band}: {file_path}")
-                return sample_name, band_dict, missing_files
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-                validation_results = list(executor.map(validate_sample, raw_mapping.items()))
-
-            # Process validation results
-            for sample_name, band_dict, missing_files in validation_results:
-                if missing_files:
-                    skipped_samples.append(sample_name)
-                    logger.warning(
-                        f"Skipping sample '{sample_name}' - missing {len(missing_files)} file(s):\n  " +
-                        "\n  ".join(missing_files[:3]) +  # Show first 3 missing files
-                        (f"\n  ... and {len(missing_files) - 3} more" if len(missing_files) > 3 else "")
-                    )
-                else:
-                    # All files exist, include this sample
-                    self.band_mapping[sample_name] = band_dict
-
-            if skipped_samples:
-                logger.info(f"Skipped {len(skipped_samples)} sample(s) due to missing files. Valid samples: {len(self.band_mapping)}")
-
-            # Override image_files with validated sample names from JSON
+            # Override image_files with sample names from JSON
             self.image_files = sorted(list(self.band_mapping.keys()))
             # For JSON-based loading, we don't use mask files
             self.segmentation_mask_files = self.image_files
@@ -724,13 +690,18 @@ class GenericNonGeoPixelwiseDataset_Custom(GenericPixelWiseDataset):
             self.image_files = unprocessed_scenes
             self.segmentation_mask_files = unprocessed_scenes
 
-            # Validate that dataset is not empty after filtering
+            # Log filtering results
+            logger = logging.getLogger("terratorch")
             if len(self.image_files) == 0:
-                logger = logging.getLogger("terratorch")
                 logger.warning(
                     f"All {skipped_count} scene(s) have already been processed and filtered out. "
                     f"Dataset is empty. To reprocess scenes, remove output_dir and layers parameters "
                     f"or delete the output directory: {output_dir}"
+                )
+            else:
+                logger.info(
+                    f"Scene filtering complete: {len(self.image_files)} scene(s) remaining to process, "
+                    f"{skipped_count} scene(s) already processed and skipped."
                 )
 
     def _load_file(self, path, nan_replace: int | float | None = None) -> xr.DataArray:
@@ -739,8 +710,6 @@ class GenericNonGeoPixelwiseDataset_Custom(GenericPixelWiseDataset):
 
         # If using JSON mapping, path is the sample name
         if self.band_mapping is not None:
-            logger = logging.getLogger("terratorch")
-
             sample_name = path
             if sample_name not in self.band_mapping:
                 raise KeyError(f"Sample '{sample_name}' not found in JSON mapping")
@@ -748,11 +717,6 @@ class GenericNonGeoPixelwiseDataset_Custom(GenericPixelWiseDataset):
             # Build candidates dict from JSON mapping
             candidates: dict[str, dict[int, str]] = {}
             for band, file_path in self.band_mapping[sample_name].items():
-                # Verify file still exists (in case it was deleted after validation)
-                if not os.path.exists(file_path):
-                    logger.warning(f"File missing for sample '{sample_name}', band {band}: {file_path}")
-                    continue
-
                 # Extract resolution from filename
                 m = re.search(r"_(10|20|60)m\.jp2$", file_path)
                 if m:
