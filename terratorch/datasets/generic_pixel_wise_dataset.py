@@ -693,9 +693,10 @@ class GenericNonGeoPixelwiseDataset_Custom(GenericPixelWiseDataset):
             # Log filtering results
             logger = logging.getLogger("terratorch")
             if len(self.image_files) == 0:
-                logger.warning(
-                    f"All {skipped_count} scene(s) have already been processed and filtered out. "
-                    f"Dataset is empty. To reprocess scenes, remove output_dir and layers parameters "
+                logger.info(
+                    f"✓ SUCCESS: All {skipped_count} scene(s) have already been processed. "
+                    f"No new scenes to process - dataset is empty. "
+                    f"To reprocess scenes, remove output_dir and layers parameters "
                     f"or delete the output directory: {output_dir}"
                 )
             else:

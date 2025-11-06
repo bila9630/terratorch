@@ -603,6 +603,7 @@ class GenericNonGeoPixelwiseCustomDataModule(NonGeoDataModule):
     """
 
     json_file: Path | None
+    _dataset_is_empty: bool = False
 
     def __init__(
         self,
@@ -843,6 +844,34 @@ class GenericNonGeoPixelwiseCustomDataModule(NonGeoDataModule):
                 layers=self.layers,
             )
 
+            # Track if dataset is empty for better logging
+            if len(self.predict_dataset) == 0:
+                self._dataset_is_empty = True
+
+    def predict_dataloader(self) -> DataLoader[dict[str, Tensor]]:
+        """Return a dataloader for prediction.
+
+        Handles empty datasets gracefully by logging success message and returning
+        an empty dataloader instead of raising an exception.
+        """
+        # Check if the predict dataset exists and has data
+        if hasattr(self, 'predict_dataset') and len(self.predict_dataset) == 0:
+            logger.info(
+                "✓ Prediction complete: all files have been processed. "
+                "No new predictions to make. Script completed successfully."
+            )
+            # Return an empty dataloader to allow graceful exit
+            return DataLoader(
+                dataset=self.predict_dataset,
+                batch_size=self.predict_batch_size,
+                shuffle=False,
+                num_workers=0,  # Use 0 workers for empty dataset
+                collate_fn=self.collate_fn,
+            )
+
+        # If dataset has data, use the standard dataloader factory
+        return self._dataloader_factory('predict')
+
     def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
         """Implement one or more PyTorch DataLoaders.
 
@@ -859,7 +888,7 @@ class GenericNonGeoPixelwiseCustomDataModule(NonGeoDataModule):
         dataset = self._valid_attribute(f"{split}_dataset", "dataset")
         batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
 
-        if self.check_stackability:
+        if self.check_stackability and len(dataset) > 0:
             logger.info("Checking stackability.")
             batch_size = check_dataset_stackability(dataset, batch_size)
 
