@@ -4,6 +4,7 @@
 This module contains generic data modules for instantiation at runtime.
 """
 
+import gc
 import logging
 import os
 from collections.abc import Callable, Iterable
@@ -16,7 +17,7 @@ import numpy as np
 import torch
 from kornia.augmentation import AugmentationSequential
 from torch import Tensor
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, default_collate
 from torchgeo.datamodules import NonGeoDataModule
 
 from terratorch.datamodules.utils import wrap_in_compose_is_list
@@ -31,6 +32,29 @@ logger = logging.getLogger("terratorch")
 def wrap_in_compose_is_list(transform_list):
     # set check shapes to false because of the multitemporal case
     return A.Compose(transform_list, is_check_shapes=False) if isinstance(transform_list, Iterable) else transform_list
+
+
+def collate_fn_with_gc(batch):
+    """Custom collate function that triggers garbage collection after batching.
+
+    This helps prevent memory leaks when loading large geospatial data by forcing
+    Python's garbage collector to run after each batch is created. Without this,
+    xarray DataArrays and related objects can accumulate in memory.
+
+    Args:
+        batch: List of samples from the dataset
+
+    Returns:
+        Batched data using PyTorch's default collate behavior
+    """
+    # Use default collate to batch the samples
+    batched = default_collate(batch)
+
+    # Force garbage collection once per batch (not per sample)
+    # This is critical for large raster data to prevent memory accumulation
+    gc.collect()
+
+    return batched
 
 
 # def collate_fn_list_dicts(batch):
@@ -757,6 +781,10 @@ class GenericNonGeoPixelwiseCustomDataModule(NonGeoDataModule):
         self.output_dir = output_dir
         self.layers = layers
 
+        # Override collate_fn to use custom collate function with garbage collection
+        # This prevents memory leaks when loading large raster data
+        self.collate_fn = collate_fn_with_gc
+
     def setup(self, stage: str) -> None:
         if stage in ["fit"]:
             self.train_dataset = self.dataset_class(
@@ -866,7 +894,7 @@ class GenericNonGeoPixelwiseCustomDataModule(NonGeoDataModule):
                 batch_size=self.predict_batch_size,
                 shuffle=False,
                 num_workers=0,  # Use 0 workers for empty dataset
-                collate_fn=self.collate_fn,
+                collate_fn=collate_fn_with_gc,
             )
 
         # If dataset has data, use the standard dataloader factory
